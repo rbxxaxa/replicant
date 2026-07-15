@@ -7,7 +7,7 @@ game).
 
 ```toml
 [dependencies]
-Replicant = "rbxxaxa/replicant@0.1.2"
+Replicant = "rbxxaxa/replicant@0.2.0"
 ```
 
 ## The model
@@ -26,17 +26,15 @@ receive a full snapshot; connected clients receive incremental events — both f
 
 ```lua
 local Replicant = require(Packages.Replicant)
-local createBaseComponent = Replicant.CreateBaseComponent.createBaseComponent
-local ComponentManager = Replicant.ComponentManager
 
 -- boot
-ComponentManager.startServer() -- on the server
-ComponentManager.startClient() -- on the client
+Replicant.ReplicantManager.startServer() -- on the server
+Replicant.ReplicantManager.startClient() -- on the client
 ```
 
-Define a component with `createBaseComponent`, then `setNew` / `setNewClient`, `createServerOnlyEvent`
-(mutates `replicatedState`), `createSendMessageToServerEvent` (client → server), `createServerOnlySignal`,
-and `setHeartbeatServer/Client`. See the module source for the full contract.
+Define a replicant type with `Replicant.defineReplicant{...}`, then `setNew` / `setNewClient`,
+`createServerOnlyEvent` (mutates `replicatedState`), `createSendMessageToServerEvent` (client → server),
+`createServerOnlySignal`, and `setHeartbeatServer/Client`. See the module source for the full contract.
 
 ## Security: validate the sender
 

@@ -1,7 +1,7 @@
 --!strict
 local RunService = game:GetService("RunService")
 
-local ComponentManager = require(script.Parent.ComponentManager)
+local ReplicantManager = require(script.Parent.ReplicantManager)
 local Signal = require(script.Parent.Parent.Signal)
 
 -- Deep-copies a replicatedState (plain data: primitives, tables, Roblox instances — no cycles, no
@@ -22,7 +22,7 @@ export type ServerOnlySignal<EventParams> = {
 }
 
 -- This file is a typing abomination sorry...
-export type BaseComponent<InitParams, ReplicatedState, ServerState, ClientState> = {
+export type Replicant<InitParams, ReplicatedState, ServerState, ClientState> = {
 	getById: (id: number?) -> any,
 	createServerOnlyEvent: <EventParams>(options: any) -> (any, number),
 	createSendMessageToServerEvent: <EventParams>(options: any) -> (any, number),
@@ -95,7 +95,7 @@ local function errorInstanceNotFound(moduleName: string, id: number)
 	end
 end
 
-local function createBaseComponent<InitParams, ReplicatedState, ServerState, ClientState>(options: {
+local function defineReplicant<InitParams, ReplicatedState, ServerState, ClientState>(options: {
 	module: ModuleScript,
 	paramsType: InitParams,
 	replicatedStateType: ReplicatedState,
@@ -131,7 +131,7 @@ local function createBaseComponent<InitParams, ReplicatedState, ServerState, Cli
 	))
 
 	local componentId: number?
-	if RunService:IsServer() then componentId = ComponentManager.registerComponent(options.module) end
+	if RunService:IsServer() then componentId = ReplicantManager.registerComponent(options.module) end
 
 	local moduleName = options.module.Name
 
@@ -168,9 +168,9 @@ local function createBaseComponent<InitParams, ReplicatedState, ServerState, Cli
 	)
 		return function(params: InitParams)
 			assert(RunService:IsServer(), "This function can only be called on the server")
-			ComponentManager.assertNotDestroying()
+			ReplicantManager.assertNotDestroying()
 
-			ComponentManager.raiseCreating()
+			ReplicantManager.raiseCreating()
 
 			local id = nextId
 			nextId += 1
@@ -178,7 +178,7 @@ local function createBaseComponent<InitParams, ReplicatedState, ServerState, Cli
 			local replicatedState, serverState = constructCallback(params)
 			local uniqueId = (componentId :: number) * 2 ^ 32 + id
 
-			ComponentManager.queueCreate(componentId :: number, id, deepCopy(replicatedState))
+			ReplicantManager.queueCreate(componentId :: number, id, deepCopy(replicatedState))
 
 			local value = {
 				id = id,
@@ -194,7 +194,7 @@ local function createBaseComponent<InitParams, ReplicatedState, ServerState, Cli
 			mt.serverInstances[id] = value :: any
 			createdThisFrame[id] = true
 
-			ComponentManager.unraiseCreating()
+			ReplicantManager.unraiseCreating()
 
 			mt.created:Fire(final)
 
@@ -344,7 +344,7 @@ local function createBaseComponent<InitParams, ReplicatedState, ServerState, Cli
 				end
 				assert(typeof(params) == "table", `{moduleName}: params is not a table`)
 
-				ComponentManager.queueEventServer(componentId, t.id, eventIndex, params)
+				ReplicantManager.queueEventServer(componentId, t.id, eventIndex, params)
 				eventHandler.modifyReplicatedState(t, params)
 				eventHandler.handleEventServer(t, params)
 			end
@@ -396,7 +396,7 @@ local function createBaseComponent<InitParams, ReplicatedState, ServerState, Cli
 				FireAllClients = function(params: EventParams)
 					assert(typeof(params) == "table", `{moduleName}: params is not a table`)
 
-					ComponentManager.queueSignalServer(componentId, eventIndex, params)
+					ReplicantManager.queueSignalServer(componentId, eventIndex, params)
 				end,
 				Event = eventIndexToSignal[eventIndex],
 			}
@@ -454,7 +454,7 @@ local function createBaseComponent<InitParams, ReplicatedState, ServerState, Cli
 		else
 			local callback = function(t: any, params: EventParams)
 				assert(typeof(params) == "table", `{moduleName}: params is not a table`)
-				ComponentManager.queueEventClient(componentId, t.id, eventIndex, params)
+				ReplicantManager.queueEventClient(componentId, t.id, eventIndex, params)
 			end
 
 			return callback
@@ -530,19 +530,19 @@ local function createBaseComponent<InitParams, ReplicatedState, ServerState, Cli
 	mt.setDestroyCallback = function(callback: (t: any) -> nil)
 		return function(t: any)
 			assert(RunService:IsServer(), "This function can only be called on the server")
-			ComponentManager.assertNotCreating()
+			ReplicantManager.assertNotCreating()
 			if t._destroying == true then return end
 
-			ComponentManager.raiseDestroying();
+			ReplicantManager.raiseDestroying();
 
 			(t :: any)._destroying = true
-			ComponentManager.queueDestroy(componentId :: number, t.id)
+			ReplicantManager.queueDestroy(componentId :: number, t.id)
 			xpcall(function()
 				callback(t)
 			end, warn :: any)
 			mt.serverInstances[t.id] = nil
 
-			ComponentManager.unraiseDestroying()
+			ReplicantManager.unraiseDestroying()
 
 			mt.destroyed:Fire(t)
 		end
@@ -619,9 +619,9 @@ local function createBaseComponent<InitParams, ReplicatedState, ServerState, Cli
 		end
 	end
 
-	return (mt :: any) :: BaseComponent<InitParams, ReplicatedState, ServerState, ClientState>, ({} :: any) :: ServerType, ({} :: any) :: ClientType
+	return (mt :: any) :: Replicant<InitParams, ReplicatedState, ServerState, ClientState>, ({} :: any) :: ServerType, ({} :: any) :: ClientType
 end
 
 return {
-	createBaseComponent = createBaseComponent,
+	defineReplicant = defineReplicant,
 }

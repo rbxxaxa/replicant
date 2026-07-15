@@ -34,7 +34,7 @@ local componentModuleObjectValuesFolder: Folder? = if RunService:IsServer() then
 
 -- Fixed-name RemoteEvents in a dedicated folder. The server creates them at require-time; clients
 -- WaitForChild them. Stable names (unlike deriving them from the script path) never change when the
--- package version bumps, and need no RemoteUtil dependency — ComponentManager frames its own buffers.
+-- package version bumps, and need no RemoteUtil dependency — ReplicantManager frames its own buffers.
 local REMOTES_FOLDER_NAME = "ReplicantRemotes"
 
 local remotesFolder: Instance
@@ -98,7 +98,7 @@ end
 module.getReadyPlayers = function(): { Player }
 	local playersReady: { Player } = {}
 	for _, player in Players:GetPlayers() do
-		if player:GetAttribute("ComponentManagerReady") then table.insert(playersReady, player) end
+		if player:GetAttribute("ReplicantManagerReady") then table.insert(playersReady, player) end
 	end
 	return playersReady
 end
@@ -118,7 +118,7 @@ function module.flushReplicationQueue()
 
 	local playersReady: { Player } = {}
 	for _, player in Players:GetPlayers() do
-		if player:GetAttribute("ComponentManagerReady") then table.insert(playersReady, player) end
+		if player:GetAttribute("ReplicantManagerReady") then table.insert(playersReady, player) end
 	end
 
 	if next(playersReady) then
@@ -317,7 +317,7 @@ function module.startServer()
 			})
 
 			for _, player in playersWaitingToBeReady do
-				player:SetAttribute("ComponentManagerReady", true)
+				player:SetAttribute("ReplicantManagerReady", true)
 				module.playerReadied:Fire(player)
 			end
 
@@ -471,10 +471,10 @@ end
 local nextComponentId = 1
 
 function module.registerComponent(componentModule: ModuleScript)
-	assert(RunService:IsServer(), "ComponentManager.registerComponent must be called on the server")
+	assert(RunService:IsServer(), "ReplicantManager.registerComponent must be called on the server")
 	assert(
 		nextComponentId < MAX_COMPONENT_TYPES,
-		`ComponentManager: too many component types registered (max {MAX_COMPONENT_TYPES - 1}); componentId is a u16 on the wire`
+		`ReplicantManager: too many component types registered (max {MAX_COMPONENT_TYPES - 1}); componentId is a u16 on the wire`
 	)
 
 	local objectValue = Instance.new("ObjectValue")
@@ -493,7 +493,7 @@ end
 
 local nextReplicationOrder = 1
 function module.queueDestroy(componentId, instanceId)
-	assert(RunService:IsServer(), "ComponentManager.queueDestroy must be called on the server")
+	assert(RunService:IsServer(), "ReplicantManager.queueDestroy must be called on the server")
 
 	local bigKey = cantorPairing(componentId, instanceId)
 	local replicationOrder = bigKeyToReplicationOrder[bigKey]
@@ -514,7 +514,7 @@ function module.queueDestroy(componentId, instanceId)
 end
 
 function module.queueCreate(componentId, instanceId, replicatedState)
-	assert(RunService:IsServer(), "ComponentManager.queueCreate must be called on the server")
+	assert(RunService:IsServer(), "ReplicantManager.queueCreate must be called on the server")
 
 	local bigKey = cantorPairing(componentId, instanceId)
 	local replicationOrder = nextReplicationOrder
@@ -539,7 +539,7 @@ function module.queueCreate(componentId, instanceId, replicatedState)
 end
 
 function module.queueEventServer(componentId, instanceId, eventIndex, params)
-	assert(RunService:IsServer(), "ComponentManager.queueEventServer must be called on the server")
+	assert(RunService:IsServer(), "ReplicantManager.queueEventServer must be called on the server")
 
 	table.insert(eventsToSendServer, {
 		eventKind = "event",
@@ -551,7 +551,7 @@ function module.queueEventServer(componentId, instanceId, eventIndex, params)
 end
 
 function module.queueSignalServer(componentId, eventIndex, params)
-	assert(RunService:IsServer(), "ComponentManager.queueSignalServer must be called on the server")
+	assert(RunService:IsServer(), "ReplicantManager.queueSignalServer must be called on the server")
 
 	table.insert(eventsToSendServer, {
 		eventKind = "signal",
@@ -563,40 +563,40 @@ end
 
 local destroying = 0
 function module.raiseDestroying()
-	assert(RunService:IsServer(), "ComponentManager.raiseDestroying must be called on the server")
+	assert(RunService:IsServer(), "ReplicantManager.raiseDestroying must be called on the server")
 	destroying += 1
 end
 
 function module.unraiseDestroying()
-	assert(RunService:IsServer(), "ComponentManager.unraiseDestroying must be called on the server")
-	assert(destroying > 0, "ComponentManager is not destroying")
+	assert(RunService:IsServer(), "ReplicantManager.unraiseDestroying must be called on the server")
+	assert(destroying > 0, "ReplicantManager is not destroying")
 	destroying -= 1
 end
 
 local creating = 0
 function module.raiseCreating()
-	assert(RunService:IsServer(), "ComponentManager.raiseCreating must be called on the server")
+	assert(RunService:IsServer(), "ReplicantManager.raiseCreating must be called on the server")
 	creating += 1
 end
 
 function module.unraiseCreating()
-	assert(RunService:IsServer(), "ComponentManager.unraiseCreating must be called on the server")
-	assert(creating > 0, "ComponentManager is not creating")
+	assert(RunService:IsServer(), "ReplicantManager.unraiseCreating must be called on the server")
+	assert(creating > 0, "ReplicantManager is not creating")
 	creating -= 1
 end
 
 function module.assertNotDestroying()
-	assert(RunService:IsServer(), "ComponentManager.assertNotDestroying must be called on the server")
+	assert(RunService:IsServer(), "ReplicantManager.assertNotDestroying must be called on the server")
 	assert(destroying == 0, "Cannot create while in the middle of destroying something.")
 end
 
 function module.assertNotCreating()
-	assert(RunService:IsServer(), "ComponentManager.assertNotCreating must be called on the server")
+	assert(RunService:IsServer(), "ReplicantManager.assertNotCreating must be called on the server")
 	assert(creating == 0, "Cannot destroy while in the middle of creating something.")
 end
 
 function module.queueEventClient(componentId, instanceId, eventIndex, params)
-	assert(RunService:IsClient(), "ComponentManager.queueEventClient must be called on the client")
+	assert(RunService:IsClient(), "ReplicantManager.queueEventClient must be called on the client")
 
 	table.insert(eventsToSendClient, {
 		eventKind = "event",
@@ -608,7 +608,7 @@ function module.queueEventClient(componentId, instanceId, eventIndex, params)
 end
 
 function module.IsPlayerReady(player: Player)
-	return player:GetAttribute("ComponentManagerReady")
+	return player:GetAttribute("ReplicantManagerReady")
 end
 
 return module
