@@ -1,7 +1,7 @@
 [package]
 name = "rbxxaxa/replicant"
 description = "Server-authoritative replicated component framework for Roblox: OOP components with auto-replicated state (replicated/server/client buckets), server-only events, ownership-validated client->server messages, a buffer-packed u16 wire protocol, and lifecycle/heartbeat management."
-version = "0.1.1"
+version = "0.1.2"
 registry = "https://github.com/UpliftGames/wally-index"
 realm = "shared"
 authors = ["mira"]

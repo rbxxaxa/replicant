@@ -4,7 +4,6 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
 local RedBlackTree = require(script.Parent.RedBlackTree)
-local RemoteUtil = require(script.Parent.RemoteUtil)
 local ReplicationCodec = require(script.Parent.ReplicationCodec)
 local Signal = require(script.Parent.Parent.Signal)
 
@@ -33,10 +32,49 @@ end
 
 local componentModuleObjectValuesFolder: Folder? = if RunService:IsServer() then ensureComponentModuleObjectValuesFolder() else nil
 
-local setReady = RemoteUtil.getRemoteEvent(ReplicatedStorage) :: RemoteUtil.ToServerRemoteEvent<nil>
-local replicateCurrentInstances = RemoteUtil.getRemoteEvent(ReplicatedStorage) :: RemoteUtil.ToClientRemoteEvent<any>
-local replicateComponentEvents = RemoteUtil.getRemoteEvent(ReplicatedStorage) :: RemoteUtil.ToClientRemoteEvent<any>
-local replicateEventsFromClient = RemoteUtil.getRemoteEvent(ReplicatedStorage) :: RemoteUtil.ToServerRemoteEvent<any>
+-- Fixed-name RemoteEvents in a dedicated folder. The server creates them at require-time; clients
+-- WaitForChild them. Stable names (unlike deriving them from the script path) never change when the
+-- package version bumps, and need no RemoteUtil dependency — ComponentManager frames its own buffers.
+local REMOTES_FOLDER_NAME = "ReplicantRemotes"
+
+local remotesFolder: Instance
+if RunService:IsServer() then
+	local existing = ReplicatedStorage:FindFirstChild(REMOTES_FOLDER_NAME)
+	if existing then
+		remotesFolder = existing
+	else
+		local folder = Instance.new("Folder")
+		folder.Name = REMOTES_FOLDER_NAME
+		folder.Parent = ReplicatedStorage
+		remotesFolder = folder
+	end
+else
+	remotesFolder = ReplicatedStorage:WaitForChild(REMOTES_FOLDER_NAME)
+end
+
+local function getRemote(name: string): RemoteEvent
+	if RunService:IsServer() then
+		local existing = remotesFolder:FindFirstChild(name)
+		if existing then return existing :: RemoteEvent end
+
+		local remote = Instance.new("RemoteEvent")
+		remote.Name = name
+		remote.Parent = remotesFolder
+		return remote
+	end
+	return remotesFolder:WaitForChild(name) :: RemoteEvent
+end
+
+local function fireForClients(remote: RemoteEvent, players: { Player }, data: any)
+	for _, player in players do
+		remote:FireClient(player, data)
+	end
+end
+
+local setReady = getRemote("SetReady")
+local replicateCurrentInstances = getRemote("ReplicateCurrentInstances")
+local replicateComponentEvents = getRemote("ReplicateComponentEvents")
+local replicateEventsFromClient = getRemote("ReplicateEventsFromClient")
 
 local componentModuleToId = {}
 local idToComponentModule = {}
@@ -165,7 +203,7 @@ function module.flushReplicationQueue()
 			offset = ReplicationCodec.writeIncremental(b, offset, record)
 		end
 
-		replicateComponentEvents:FireForClients(playersReady, {
+		fireForClients(replicateComponentEvents, playersReady, {
 			b = b,
 			tableResults = tableResults,
 		})
@@ -273,7 +311,7 @@ function module.startServer()
 				offset = ReplicationCodec.writeSnapshot(b, offset, record)
 			end
 
-			replicateCurrentInstances:FireForClients(playersWaitingToBeReady, {
+			fireForClients(replicateCurrentInstances, playersWaitingToBeReady, {
 				b = b,
 				tableResults = tableResults,
 			})
