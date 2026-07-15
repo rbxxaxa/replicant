@@ -2,6 +2,7 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
 
 local RedBlackTree = require(script.Parent.RedBlackTree)
 local ReplicationCodec = require(script.Parent.ReplicationCodec)
@@ -213,7 +214,16 @@ function module.flushReplicationQueue()
 	eventsToSendToClientQueueType = nil
 end
 
+-- Replicants replicate instance references and assume every client holds the full DataModel.
+-- Workspace.StreamingEnabled streams instances in/out per client, so a replicated instance
+-- reference can resolve to nil on a client — silently desyncing state. Fail loudly at boot.
+local function assertStreamingDisabled()
+	assert(not Workspace.StreamingEnabled, "Replicant does not support Workspace.StreamingEnabled; disable it (Workspace.StreamingEnabled = false).")
+end
+
 function module.startServer()
+	assertStreamingDisabled()
+
 	local playersWaitingToBeReady: { Player } = {}
 
 	setReady.OnServerEvent:Connect(function(player)
@@ -343,6 +353,8 @@ function module.startServer()
 end
 
 function module.startClient()
+	assertStreamingDisabled()
+
 	local function onChildAdded(objectValue: Instance)
 		if objectValue:IsA("ObjectValue") then
 			local componentModule = objectValue.Value :: ModuleScript
