@@ -67,6 +67,7 @@ not (enforced, not by convention).
 rokit install
 wally install
 lune run tests/replication-codec.test   # pure wire-codec round-trip tests
+lune run tests/redblacktree.test        # red-black tree invariant + differential stress tests
 ```
 
 `ReplicationCodec` is pure (buffer-only) and unit-tested under Lune; `ComponentManager` and
