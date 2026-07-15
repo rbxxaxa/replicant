@@ -68,5 +68,5 @@ lune run tests/replication-codec.test   # pure wire-codec round-trip tests
 lune run tests/redblacktree.test        # red-black tree invariant + differential stress tests
 ```
 
-`ReplicationCodec` is pure (buffer-only) and unit-tested under Lune; `ComponentManager` and
-`CreateBaseComponent` depend on Roblox APIs and are exercised in-engine by the consuming game.
+`ReplicationCodec` is pure (buffer-only) and unit-tested under Lune; `ReplicantManager` and the
+`defineReplicant` factory depend on Roblox APIs and are exercised in-engine by the consuming game.
