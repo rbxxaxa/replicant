@@ -7,7 +7,7 @@ game).
 
 ```toml
 [dependencies]
-Replicant = "rbxxaxa/replicant@0.1.0"
+Replicant = "rbxxaxa/replicant@0.1.1"
 ```
 
 ## The model

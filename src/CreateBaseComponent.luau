@@ -2,8 +2,19 @@
 local RunService = game:GetService("RunService")
 
 local ComponentManager = require(script.Parent.ComponentManager)
-local Sift = require(script.Parent.Parent.Sift)
 local Signal = require(script.Parent.Parent.Signal)
+
+-- Deep-copies a replicatedState (plain data: primitives, tables, Roblox instances — no cycles, no
+-- metatables per the component contract). Tables are copied recursively; everything else (including
+-- Instances and buffers) passes through by reference. Bundled so the package needs no Sift dependency.
+local function deepCopy(value: any): any
+	if type(value) ~= "table" then return value end
+	local copy = {}
+	for k, v in value do
+		copy[k] = deepCopy(v)
+	end
+	return copy
+end
 
 export type ServerOnlySignal<EventParams> = {
 	FireAllClients: (params: EventParams) -> (),
@@ -167,7 +178,7 @@ local function createBaseComponent<InitParams, ReplicatedState, ServerState, Cli
 			local replicatedState, serverState = constructCallback(params)
 			local uniqueId = (componentId :: number) * 2 ^ 32 + id
 
-			ComponentManager.queueCreate(componentId :: number, id, Sift.Dictionary.copyDeep(replicatedState))
+			ComponentManager.queueCreate(componentId :: number, id, deepCopy(replicatedState))
 
 			local value = {
 				id = id,

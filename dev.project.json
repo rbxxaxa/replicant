@@ -5,9 +5,6 @@
 		"replicant": {
 			"$path": "src"
 		},
-		"Sift": {
-			"$path": "Packages/Sift.lua"
-		},
 		"Signal": {
 			"$path": "Packages/Signal.lua"
 		},
