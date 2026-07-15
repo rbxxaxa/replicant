@@ -5,7 +5,7 @@ version = "0.1.0"
 registry = "https://github.com/UpliftGames/wally-index"
 realm = "shared"
 authors = ["mira"]
-exclude = ["**/*.zip"]
+exclude = ["**/*.zip", "tests/**", "dev.project.json", "sourcemap.json", "globalTypes.d.luau", "Packages/**", "ServerPackages/**"]
 
 [dependencies]
 Sift = "csqrl/sift@0.0.2"
