@@ -1,0 +1,6 @@
+/Packages
+/ServerPackages
+sourcemap.json
+globalTypes.d.luau
+wally.lock
+*.zip
