@@ -33,37 +33,72 @@ end
 
 local componentModuleObjectValuesFolder: Folder? = if RunService:IsServer() then ensureComponentModuleObjectValuesFolder() else nil
 
--- Fixed-name RemoteEvents in a dedicated folder. The server creates them at require-time; clients
+-- Fixed-name RemoteEvents in a dedicated folder. The server creates them on demand; clients
 -- WaitForChild them. Stable names (unlike deriving them from the script path) never change when the
 -- package version bumps, and need no RemoteUtil dependency — ReplicantManager frames its own buffers.
+--
+-- ⚠ RESOLVED LAZILY, AND THAT IS A HARD REQUIREMENT: REQUIRING THIS MODULE MUST NEVER YIELD.
+-- The folder and the four remotes used to be looked up at module scope, where the client's
+-- `WaitForChild` blocks until the server creates them. In a running game that is invisible, because
+-- the server always gets there first. Everywhere else it hangs forever:
+--
+--   * Story/component browsers (UILabs and friends) require a component to render it, the component
+--     requires this module, and edit mode has no server — so the require never returns and Studio
+--     prints "Infinite yield possible on ReplicatedStorage:WaitForChild("ReplicantRemotes")".
+--   * Any tool that loads game modules outside a running session hits the same wall.
+--
+-- Deferring the lookup to first USE costs one table check per call and moves the wait to
+-- startClient(), which is where waiting for the server is the correct behaviour. The server side
+-- also becomes lazy, which is safe: nothing reads a remote before startServer() connects to it.
 local REMOTES_FOLDER_NAME = "ReplicantRemotes"
 
-local remotesFolder: Instance
-if RunService:IsServer() then
-	local existing = ReplicatedStorage:FindFirstChild(REMOTES_FOLDER_NAME)
-	if existing then
-		remotesFolder = existing
+local remotesFolder: Instance? = nil
+local function getRemotesFolder(): Instance
+	local cached = remotesFolder
+	if cached ~= nil then return cached end
+
+	local resolved: Instance
+	if RunService:IsServer() then
+		local existing = ReplicatedStorage:FindFirstChild(REMOTES_FOLDER_NAME)
+		if existing then
+			resolved = existing
+		else
+			local folder = Instance.new("Folder")
+			folder.Name = REMOTES_FOLDER_NAME
+			folder.Parent = ReplicatedStorage
+			resolved = folder
+		end
 	else
-		local folder = Instance.new("Folder")
-		folder.Name = REMOTES_FOLDER_NAME
-		folder.Parent = ReplicatedStorage
-		remotesFolder = folder
+		resolved = ReplicatedStorage:WaitForChild(REMOTES_FOLDER_NAME)
 	end
-else
-	remotesFolder = ReplicatedStorage:WaitForChild(REMOTES_FOLDER_NAME)
+	remotesFolder = resolved
+	return resolved
 end
 
+-- Optional VALUE type, not just an optional lookup: Luau treats `{ [string]: RemoteEvent }` as
+-- always-populated and rejects the nil comparison below outright.
+local remoteCache: { [string]: RemoteEvent? } = {}
 local function getRemote(name: string): RemoteEvent
-	if RunService:IsServer() then
-		local existing = remotesFolder:FindFirstChild(name)
-		if existing then return existing :: RemoteEvent end
+	local cached = remoteCache[name]
+	if cached ~= nil then return cached end
 
-		local remote = Instance.new("RemoteEvent")
-		remote.Name = name
-		remote.Parent = remotesFolder
-		return remote
+	local folder = getRemotesFolder()
+	local resolved: RemoteEvent
+	if RunService:IsServer() then
+		local existing = folder:FindFirstChild(name)
+		if existing then
+			resolved = existing :: RemoteEvent
+		else
+			local remote = Instance.new("RemoteEvent")
+			remote.Name = name
+			remote.Parent = folder
+			resolved = remote
+		end
+	else
+		resolved = folder:WaitForChild(name) :: RemoteEvent
 	end
-	return remotesFolder:WaitForChild(name) :: RemoteEvent
+	remoteCache[name] = resolved
+	return resolved
 end
 
 local function fireForClients(remote: RemoteEvent, players: { Player }, data: any)
@@ -72,10 +107,21 @@ local function fireForClients(remote: RemoteEvent, players: { Player }, data: an
 	end
 end
 
-local setReady = getRemote("SetReady")
-local replicateCurrentInstances = getRemote("ReplicateCurrentInstances")
-local replicateComponentEvents = getRemote("ReplicateComponentEvents")
-local replicateEventsFromClient = getRemote("ReplicateEventsFromClient")
+-- Accessors, not values. Each memoises through getRemote, so the cost after the first call is a
+-- table lookup — but the FIRST call is what may yield, and it must happen inside start*(), never at
+-- require time.
+local function setReady(): RemoteEvent
+	return getRemote("SetReady")
+end
+local function replicateCurrentInstances(): RemoteEvent
+	return getRemote("ReplicateCurrentInstances")
+end
+local function replicateComponentEvents(): RemoteEvent
+	return getRemote("ReplicateComponentEvents")
+end
+local function replicateEventsFromClient(): RemoteEvent
+	return getRemote("ReplicateEventsFromClient")
+end
 
 local componentModuleToId = {}
 local idToComponentModule = {}
@@ -204,7 +250,7 @@ function module.flushReplicationQueue()
 			offset = ReplicationCodec.writeIncremental(b, offset, record)
 		end
 
-		fireForClients(replicateComponentEvents, playersReady, {
+		fireForClients(replicateComponentEvents(), playersReady, {
 			b = b,
 			tableResults = tableResults,
 		})
@@ -226,11 +272,11 @@ function module.startServer()
 
 	local playersWaitingToBeReady: { Player } = {}
 
-	setReady.OnServerEvent:Connect(function(player)
+	setReady().OnServerEvent:Connect(function(player)
 		table.insert(playersWaitingToBeReady, player)
 	end)
 
-	replicateEventsFromClient.OnServerEvent:Connect(function(player, events)
+	replicateEventsFromClient().OnServerEvent:Connect(function(player, events)
 		for _, event in events do
 			if event.eventKind == "event" then
 				table.insert(eventsReceivedFromClient, {
@@ -321,7 +367,7 @@ function module.startServer()
 				offset = ReplicationCodec.writeSnapshot(b, offset, record)
 			end
 
-			fireForClients(replicateCurrentInstances, playersWaitingToBeReady, {
+			fireForClients(replicateCurrentInstances(), playersWaitingToBeReady, {
 				b = b,
 				tableResults = tableResults,
 			})
@@ -374,9 +420,9 @@ function module.startClient()
 	-- No artificial delay before signalling ready: clientEntry only starts modules after
 	-- game:IsLoaded(), by which point every component's ObjectValue (all registered at server
 	-- boot) has replicated, so the id->module map built above is already complete.
-	setReady:FireServer()
+	setReady():FireServer()
 
-	replicateCurrentInstances.OnClientEvent:Connect(function(data)
+	replicateCurrentInstances().OnClientEvent:Connect(function(data)
 		local b = data.b
 		local tableResults = data.tableResults
 
@@ -412,7 +458,7 @@ function module.startClient()
 		end
 	end)
 
-	replicateComponentEvents.OnClientEvent:Connect(function(data)
+	replicateComponentEvents().OnClientEvent:Connect(function(data)
 		local b = data.b
 		local tableResults = data.tableResults
 
@@ -474,7 +520,7 @@ function module.startClient()
 		end
 
 		if next(eventsToSendClient) then
-			replicateEventsFromClient:FireServer(eventsToSendClient)
+			replicateEventsFromClient():FireServer(eventsToSendClient)
 			table.clear(eventsToSendClient)
 		end
 	end)
