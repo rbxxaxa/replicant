@@ -270,6 +270,18 @@ end
 function module.startServer()
 	assertStreamingDisabled()
 
+	-- ⚠ CREATE ALL FOUR REMOTES NOW, not when each is first used. Creation never yields on the
+	-- server, but a client's `getRemote` is a WaitForChild — so any remote the server has not made
+	-- yet is a remote a joining client BLOCKS on. Two of these are only touched when the server
+	-- first FIRES them, which for `ReplicateCurrentInstances` means "when something first needs
+	-- replicating": the client would sit in startClient waiting on a RemoteEvent that did not exist
+	-- yet, log an infinite-yield warning at five seconds, and hold up the rest of client startup
+	-- behind it. Listing them here is what makes the client's waits resolve instantly.
+	setReady()
+	replicateCurrentInstances()
+	replicateComponentEvents()
+	replicateEventsFromClient()
+
 	local playersWaitingToBeReady: { Player } = {}
 
 	setReady().OnServerEvent:Connect(function(player)
