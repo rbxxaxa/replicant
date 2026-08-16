@@ -13,9 +13,25 @@
 --   Replicant.ReplicantManager                                          startServer()/startClient(), …
 --   Replicant.ReplicationCodec                                          the pure wire codec (mostly internal)
 --
--- NOTE (security): every client->server message handler MUST validate its 3rd `player` argument
--- against the target instance's owner — the framework routes by client-chosen instance id and does
--- not check ownership for you.
+-- WORLDS (replication scopes):
+--   ReplicantManager.createWorld() -> worldId          a fresh, private scope
+--   ReplicantManager.withWorld(id, fn)                 everything constructed inside `fn` lands there
+--   ReplicantManager.subscribeToWorld(player, id)      player starts seeing it (full snapshot)
+--   ReplicantManager.unsubscribeFromWorld(player, id)  player stops seeing it (destroys)
+--
+-- `replicatedState` used to fan out to EVERY ready client, which made anything per-player quadratic
+-- and forced games to hand-roll a private RemoteEvent alongside the framework. A world is a set of
+-- instances plus the players allowed to see them. World 0 is the default and behaves exactly as
+-- before, so existing code is unaffected.
+--
+-- ⚠ WORLDS ARE SERVER-SIDE ONLY. The client has no world id and no new message type: subscribing
+-- sends CREATEs, unsubscribing sends DESTROYs. Client components need no changes.
+--
+-- NOTE (security): worlds now enforce the ACL the framework used to leave to you — a client can only
+-- reach instances in worlds it is subscribed to. That answers "may this player talk to this object
+-- at all". It does NOT validate parameters: every client->server handler must still check that what
+-- it was asked to do is legal. For an instance in world 0 (shared by everyone) the old rule stands
+-- in full — validate the 3rd `player` argument against the target's owner.
 
 local ReplicantManager = require(script.ReplicantManager)
 local ReplicationCodec = require(script.ReplicationCodec)

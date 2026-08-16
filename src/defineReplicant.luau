@@ -189,9 +189,31 @@ local function defineReplicant<InitParams, ReplicatedState, ServerState, ClientS
 				isServer = true,
 			}
 
-			local final = (finalizeCallback :: any)(value, params)
-
+			-- ⚠ REGISTERED BEFORE FINALIZE, matching setNewClient (which registers before its own
+			-- finalize). `queueCreate` above already made this instance visible to the replication
+			-- registry — world-scoped walks like `subscribeToWorld`'s snapshot burst can reach it —
+			-- so `getDataForReplication` must be able to resolve it DURING finalize, not only after.
+			-- Registering late made "subscribe the owner from the finalize callback" error with
+			-- "instance not found". `finalizeCallback` setmetatables `value` in place, so storing the
+			-- bare table early hands out the same reference the caller ends up with.
 			mt.serverInstances[id] = value :: any
+
+			-- ⚠ THE CREATING COUNTER MUST UNWIND EVEN IF FINALIZE THROWS. `raiseCreating` fired above;
+			-- an error in a consumer's finalize callback that escapes without `unraiseCreating` pins
+			-- the module-global counter, after which EVERY replicant destroy in the entire game fails
+			-- "Cannot destroy while in the middle of creating something". A typo in one component's
+			-- constructor must not brick the framework for every other component.
+			local finalizeOk, final = pcall(finalizeCallback :: any, value, params)
+			if not finalizeOk then
+				-- Roll back what this constructor registered, so the failed instance is not left as a
+				-- ghost the replication registry keeps shipping. The queued destroy pairs with the
+				-- queued create; a client that already received the create receives the destroy.
+				mt.serverInstances[id] = nil
+				ReplicantManager.queueDestroy(componentId :: number, id)
+				ReplicantManager.unraiseCreating()
+				error(final, 2)
+			end
+
 			createdThisFrame[id] = true
 
 			ReplicantManager.unraiseCreating()
