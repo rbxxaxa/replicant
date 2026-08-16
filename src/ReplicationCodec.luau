@@ -1,4 +1,3 @@
---!strict
 -- ReplicationCodec: the wire framing for the component replication protocol.
 --
 -- This module is PURE — it depends only on the `buffer` library, never on Roblox

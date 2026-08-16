@@ -1,4 +1,3 @@
---!strict
 -- rbxxaxa/replicant — a server-authoritative replicated object framework for Roblox.
 --
 -- "Replicants" are OOP objects whose state auto-replicates server -> client. Each has three state
