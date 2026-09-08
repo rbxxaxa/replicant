@@ -1,5 +1,7 @@
 --!strict
 local RunService = game:GetService("RunService")
+local IS_CLIENT = RunService:IsClient()
+local IS_SERVER = RunService:IsServer()
 
 local ReplicantManager = require(script.Parent.ReplicantManager)
 local Signal = require(script.Parent.Parent.Signal)
@@ -131,7 +133,7 @@ local function defineReplicant<InitParams, ReplicatedState, ServerState, ClientS
 	))
 
 	local componentId: number?
-	if RunService:IsServer() then componentId = ReplicantManager.registerComponent(options.module) end
+	if IS_SERVER then componentId = ReplicantManager.registerComponent(options.module) end
 
 	local moduleName = options.module.Name
 
@@ -167,7 +169,7 @@ local function defineReplicant<InitParams, ReplicatedState, ServerState, ClientS
 		) -> any)
 	)
 		return function(params: InitParams)
-			assert(RunService:IsServer(), "This function can only be called on the server")
+			assert(IS_SERVER, "This function can only be called on the server")
 			ReplicantManager.assertNotDestroying()
 
 			ReplicantManager.raiseCreating()
@@ -216,7 +218,7 @@ local function defineReplicant<InitParams, ReplicatedState, ServerState, ClientS
 		) -> any
 	)
 		return function(id: number, replicatedState: ReplicatedState, replicatedComponentId: number?)
-			assert(RunService:IsClient(), "This function can only be called on the client")
+			assert(IS_CLIENT, "This function can only be called on the client")
 
 			local clientState = constructCallback(replicatedState)
 			local value = {
@@ -336,7 +338,7 @@ local function defineReplicant<InitParams, ReplicatedState, ServerState, ClientS
 		}
 		events[eventIndex] = eventHandler
 
-		if RunService:IsServer() then
+		if IS_SERVER then
 			local callback = function(t: any, params: EventParams)
 				if t._destroying then
 					warn(`This instance of {moduleName} is being destroyed`)
@@ -391,7 +393,7 @@ local function defineReplicant<InitParams, ReplicatedState, ServerState, ClientS
 		events[eventIndex] = eventHandler
 		eventIndexToSignal[eventIndex] = Signal.new()
 
-		if RunService:IsServer() then
+		if IS_SERVER then
 			return {
 				FireAllClients = function(params: EventParams)
 					assert(typeof(params) == "table", `{moduleName}: params is not a table`)
@@ -443,7 +445,7 @@ local function defineReplicant<InitParams, ReplicatedState, ServerState, ClientS
 		}
 		events[eventIndex] = eventHandler
 
-		if RunService:IsServer() then
+		if IS_SERVER then
 			local callback = function(t: any, params: EventParams)
 				error(`{moduleName}: This function can only be called on the client`)
 
@@ -462,7 +464,7 @@ local function defineReplicant<InitParams, ReplicatedState, ServerState, ClientS
 	end
 
 	mt.handleEventFromServer = function(id: number, eventIndex: number, params: any)
-		assert(RunService:IsClient(), "This function can only be called on the client")
+		assert(IS_CLIENT, "This function can only be called on the client")
 		xpcall(function()
 			local instance = mt.clientInstances[id]
 			if not instance then errorInstanceNotFound(moduleName, id) end
@@ -482,7 +484,7 @@ local function defineReplicant<InitParams, ReplicatedState, ServerState, ClientS
 	end
 
 	mt.handleEventFromClient = function(id: number, eventIndex: number, params: any, player: Player?)
-		assert(RunService:IsServer(), "This function can only be called on the server")
+		assert(IS_SERVER, "This function can only be called on the server")
 
 		local instance = mt.serverInstances[id]
 		if not instance then
@@ -516,7 +518,7 @@ local function defineReplicant<InitParams, ReplicatedState, ServerState, ClientS
 	mt.getById = function(id: number?): any
 		if id == nil then return nil end
 
-		if RunService:IsServer() then
+		if IS_SERVER then
 			return mt.serverInstances[id]
 		else
 			return mt.clientInstances[id]
@@ -529,7 +531,7 @@ local function defineReplicant<InitParams, ReplicatedState, ServerState, ClientS
 
 	mt.setDestroyCallback = function(callback: (t: any) -> nil)
 		return function(t: any)
-			assert(RunService:IsServer(), "This function can only be called on the server")
+			assert(IS_SERVER, "This function can only be called on the server")
 			ReplicantManager.assertNotCreating()
 			if t._destroying == true then return end
 
@@ -550,7 +552,7 @@ local function defineReplicant<InitParams, ReplicatedState, ServerState, ClientS
 
 	mt.setCleanUpClientCallback = function(callback: (t: any) -> nil)
 		return function(id: number)
-			assert(RunService:IsClient(), "This function can only be called on the client")
+			assert(IS_CLIENT, "This function can only be called on the client")
 			xpcall(function()
 				local instance = mt.clientInstances[id]
 				if not instance then errorInstanceNotFound(moduleName, id) end
@@ -567,7 +569,7 @@ local function defineReplicant<InitParams, ReplicatedState, ServerState, ClientS
 	mt.setHeartbeatServer = function(callback: (t: any, dt: number) -> nil, interval: number?)
 		local intervalNumber: number = if interval == nil then 0 else interval
 		return function(dt: number)
-			assert(RunService:IsServer(), "This function can only be called on the server")
+			assert(IS_SERVER, "This function can only be called on the server")
 
 			heartbeatAccumulator += dt
 
@@ -590,7 +592,7 @@ local function defineReplicant<InitParams, ReplicatedState, ServerState, ClientS
 
 	mt.setHeartbeatClient = function(callback: (t: any, dt: number) -> nil)
 		return function(dt: number)
-			assert(RunService:IsClient(), "This function can only be called on the client")
+			assert(IS_CLIENT, "This function can only be called on the client")
 			for _, instance in mt.clientInstances do
 				callback(instance, dt)
 			end
@@ -612,7 +614,7 @@ local function defineReplicant<InitParams, ReplicatedState, ServerState, ClientS
 	end
 
 	mt.getAllInstances = function()
-		if RunService:IsServer() then
+		if IS_SERVER then
 			return mt.serverInstances :: any
 		else
 			return mt.clientInstances :: any
