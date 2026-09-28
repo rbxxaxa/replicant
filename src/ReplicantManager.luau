@@ -1,7 +1,6 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
-local Workspace = game:GetService("Workspace")
 
 local RedBlackTree = require(script.Parent.RedBlackTree)
 local ReplicationCodec = require(script.Parent.ReplicationCodec)
@@ -262,6 +261,7 @@ type PreparedEvent = {
 	payload: buffer?,
 	payloadLen: number,
 	payloadTable: any,
+	instanceHandles: any?,
 	worldId: number,
 }
 
@@ -300,7 +300,7 @@ local function prepareEvent(event: any): PreparedEvent?
 		}
 	elseif event.eventKind == "create" then
 		local component = getComponent(event.componentId)
-		local payload, payloadTable = component.serializeReplicatedState(event.replicatedState)
+		local payload, payloadTable, instanceHandles = component.serializeReplicatedState(event.replicatedState, event.instanceHandles)
 		local payloadLen = if payload then buffer.len(payload) else 0
 		assert(payloadLen < 2 ^ 16, "Buffer is too large to send")
 
@@ -311,6 +311,7 @@ local function prepareEvent(event: any): PreparedEvent?
 			payload = payload,
 			payloadLen = payloadLen,
 			payloadTable = payloadTable,
+			instanceHandles = instanceHandles,
 			worldId = worldId,
 		}
 	elseif event.eventKind == "event" or event.eventKind == "signal" then
@@ -344,6 +345,7 @@ function module._sendPreparedToPlayers(playersReady: { Player }, prepared: { Pre
 	if next(playersReady) == nil then return end
 
 	local tableResults: { any } = {}
+	local instanceHandlesResults: { any } = {}
 	local records: { ReplicationCodec.IncrementalRecord } = {}
 	local totalBufferSize = 4
 
@@ -358,6 +360,12 @@ function module._sendPreparedToPlayers(playersReady: { Player }, prepared: { Pre
 			table.insert(tableResults, entry.payloadTable)
 			tablePosition = #tableResults
 		end
+		local handlesPosition = 0
+		if entry.instanceHandles ~= nil and next(entry.instanceHandles) ~= nil then
+			table.insert(instanceHandlesResults, entry.instanceHandles)
+			handlesPosition = #instanceHandlesResults
+		end
+		assert(tablePosition < 2 ^ 16 and handlesPosition < 2 ^ 16, "Too many side-channel tables in a replication packet")
 
 		local record: ReplicationCodec.IncrementalRecord = {
 			tag = entry.tag,
@@ -367,6 +375,7 @@ function module._sendPreparedToPlayers(playersReady: { Player }, prepared: { Pre
 			payload = entry.payload,
 			payloadLen = entry.payloadLen,
 			tablePosition = tablePosition,
+			handlesPosition = handlesPosition,
 		}
 
 		totalBufferSize += ReplicationCodec.sizeIncremental(record)
@@ -387,6 +396,7 @@ function module._sendPreparedToPlayers(playersReady: { Player }, prepared: { Pre
 	fireForClients(replicateComponentEvents(), playersReady, {
 		b = b,
 		tableResults = tableResults,
+		instanceHandlesResults = instanceHandlesResults,
 	})
 end
 
@@ -556,8 +566,9 @@ end
 -- ⚠ REPLICATION ORDER IS PRESERVED. The red-black tree exists so instances arrive in creation order,
 -- because a component's `newClient` may reference an earlier one. Filtering by world must not
 -- reorder — hence an in-order traversal with a predicate, not a gather-then-sort.
-local function buildSnapshotForWorlds(visibleWorlds: { [number]: boolean }): (buffer, { any })
+local function buildSnapshotForWorlds(visibleWorlds: { [number]: boolean }): (buffer, { any }, { any })
 	local tableResults: { any } = {}
+	local instanceHandlesResults: { any } = {}
 	local records: { ReplicationCodec.SnapshotRecord } = {}
 
 	-- ONE traversal across all visible worlds, so instances arrive in global creation order even when
@@ -571,9 +582,9 @@ local function buildSnapshotForWorlds(visibleWorlds: { [number]: boolean }): (bu
 	local totalBufferSize = 4
 	for _, pair in pairSequence do
 		local component = getComponent(pair.componentId)
-		local replicatedState = component.getDataForReplication(pair.instanceId)
+		local replicatedState, handles = component.getDataForReplication(pair.instanceId)
 
-		local payloadBuffer, payloadTable = component.serializeReplicatedState(replicatedState)
+		local payloadBuffer, payloadTable, instanceHandles = component.serializeReplicatedState(replicatedState, handles)
 		local payloadLen = if payloadBuffer then buffer.len(payloadBuffer) else 0
 		assert(payloadLen < 2 ^ 16, "Buffer is too large to send")
 
@@ -582,6 +593,12 @@ local function buildSnapshotForWorlds(visibleWorlds: { [number]: boolean }): (bu
 			table.insert(tableResults, payloadTable)
 			tablePosition = #tableResults
 		end
+		local handlesPosition = 0
+		if instanceHandles ~= nil and next(instanceHandles) ~= nil then
+			table.insert(instanceHandlesResults, instanceHandles)
+			handlesPosition = #instanceHandlesResults
+		end
+		assert(tablePosition < 2 ^ 16 and handlesPosition < 2 ^ 16, "Too many side-channel tables in a replication snapshot")
 
 		local record: ReplicationCodec.SnapshotRecord = {
 			componentId = pair.componentId,
@@ -589,6 +606,7 @@ local function buildSnapshotForWorlds(visibleWorlds: { [number]: boolean }): (bu
 			payload = payloadBuffer,
 			payloadLen = payloadLen,
 			tablePosition = tablePosition,
+			handlesPosition = handlesPosition,
 		}
 		totalBufferSize += ReplicationCodec.sizeSnapshot(record)
 		table.insert(records, record)
@@ -603,19 +621,10 @@ local function buildSnapshotForWorlds(visibleWorlds: { [number]: boolean }): (bu
 		offset = ReplicationCodec.writeSnapshot(b, offset, record)
 	end
 
-	return b, tableResults
-end
-
--- Replicants replicate instance references and assume every client holds the full DataModel.
--- Workspace.StreamingEnabled streams instances in/out per client, so a replicated instance
--- reference can resolve to nil on a client — silently desyncing state. Fail loudly at boot.
-local function assertStreamingDisabled()
-	assert(not Workspace.StreamingEnabled, "Replicant does not support Workspace.StreamingEnabled; disable it (Workspace.StreamingEnabled = false).")
+	return b, tableResults, instanceHandlesResults
 end
 
 function module.startServer()
-	assertStreamingDisabled()
-
 	-- ⚠ CREATE ALL FOUR REMOTES NOW, not when each is first used. Creation never yields on the
 	-- server, but a client's `getRemote` is a WaitForChild — so any remote the server has not made
 	-- yet is a remote a joining client BLOCKS on. Two of these are only touched when the server
@@ -719,10 +728,11 @@ function module.startServer()
 			end
 
 			for _, group in snapshotGroups do
-				local b, tableResults = buildSnapshotForWorlds(group.visible)
+				local b, tableResults, instanceHandlesResults = buildSnapshotForWorlds(group.visible)
 				fireForClients(replicateCurrentInstances(), group.players, {
 					b = b,
 					tableResults = tableResults,
+					instanceHandlesResults = instanceHandlesResults,
 				})
 			end
 
@@ -782,8 +792,6 @@ function module.startServer()
 end
 
 function module.startClient()
-	assertStreamingDisabled()
-
 	local function onChildAdded(objectValue: Instance)
 		if objectValue:IsA("ObjectValue") then
 			local componentModule = objectValue.Value :: ModuleScript
@@ -808,6 +816,7 @@ function module.startClient()
 	replicateCurrentInstances().OnClientEvent:Connect(function(data)
 		local b = data.b
 		local tableResults = data.tableResults
+		local instanceHandlesResults = data.instanceHandlesResults or {}
 
 		local offset = 0
 		local count = buffer.readu32(b, offset)
@@ -826,7 +835,8 @@ function module.startClient()
 			xpcall(function()
 				if component.validateReplication and not component.validateReplication(replicatedState) then return end
 
-				local componentInstance = component.newClient(record.instanceId, replicatedState, record.componentId)
+				local componentInstance =
+					component.newClient(record.instanceId, replicatedState, record.componentId, instanceHandlesResults[record.handlesPosition])
 
 				if component.clientLateInit then
 					table.insert(lateInitCallbacks, function()
@@ -844,6 +854,7 @@ function module.startClient()
 	replicateComponentEvents().OnClientEvent:Connect(function(data)
 		local b = data.b
 		local tableResults = data.tableResults
+		local instanceHandlesResults = data.instanceHandlesResults or {}
 
 		local offset = 0
 		local count = buffer.readu32(b, offset)
@@ -864,7 +875,8 @@ function module.startClient()
 				xpcall(function()
 					if component.validateReplication and not component.validateReplication(replicatedState) then return end
 
-					local componentInstance = component.newClient(record.instanceId, replicatedState, record.componentId)
+					local componentInstance =
+						component.newClient(record.instanceId, replicatedState, record.componentId, instanceHandlesResults[record.handlesPosition])
 					local hasLateInitCallback = component.clientLateInit ~= nil
 					if hasLateInitCallback then component.clientLateInit(componentInstance) end
 				end, warn :: any)
@@ -963,7 +975,7 @@ function module.queueDestroy(componentId, instanceId)
 	})
 end
 
-function module.queueCreate(componentId, instanceId, replicatedState)
+function module.queueCreate(componentId, instanceId, replicatedState, instanceHandles)
 	assert(RunService:IsServer(), "ReplicantManager.queueCreate must be called on the server")
 
 	local bigKey = cantorPairing(componentId, instanceId)
@@ -990,6 +1002,7 @@ function module.queueCreate(componentId, instanceId, replicatedState)
 		componentId = componentId,
 		instanceId = instanceId,
 		replicatedState = replicatedState,
+		instanceHandles = instanceHandles,
 		worldId = worldId,
 	})
 end
@@ -1184,11 +1197,13 @@ function module.subscribeToWorld(player: Player, worldId: number)
 	local creates: { any } = {}
 	forEachInstanceInWorld(worldId, function(componentId: number, instanceId: number)
 		local component = getComponent(componentId)
+		local replicatedState, instanceHandles = component.getDataForReplication(instanceId)
 		table.insert(creates, {
 			eventKind = "create",
 			componentId = componentId,
 			instanceId = instanceId,
-			replicatedState = component.getDataForReplication(instanceId),
+			replicatedState = replicatedState,
+			instanceHandles = instanceHandles,
 		})
 	end)
 

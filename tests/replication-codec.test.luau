@@ -255,5 +255,43 @@ do
 	check("scratch signal fully consumed", offset == total, `ended at {offset}, expected {total}`)
 end
 
+-- Handle side-channel positions are independent of custom state tables. A missing physical
+-- instance never removes a handle entry; transport carries the handle object separately.
+for _, handlesPosition in { 0, 1, 256, 65535 } do
+	local created = roundtripIncremental({
+		tag = ReplicationCodec.CREATE,
+		componentId = 300,
+		instanceId = 9,
+		payloadLen = 0,
+		tablePosition = 17,
+		handlesPosition = handlesPosition,
+	})
+	check("create handle position round-trips", created.handlesPosition == handlesPosition)
+	check("create handles do not overwrite state table position", created.tablePosition == 17)
+	local snapshot = roundtripSnapshot({
+		componentId = 300,
+		instanceId = 9,
+		payloadLen = 0,
+		tablePosition = 0,
+		handlesPosition = handlesPosition,
+	})
+	check("snapshot handle position round-trips without state table", snapshot.handlesPosition == handlesPosition and snapshot.tablePosition == 0)
+end
+do
+	local scratch: ReplicationCodec.IncrementalRecord = { tag = ReplicationCodec.CREATE, componentId = 1, handlesPosition = 5 }
+	local records: { ReplicationCodec.IncrementalRecord } = {
+		{ tag = ReplicationCodec.DESTROY, componentId = 1, instanceId = 1 },
+		{ tag = ReplicationCodec.EVENT, componentId = 1, instanceId = 1, eventIndex = 0, tablePosition = 0 },
+		{ tag = ReplicationCodec.SIGNAL, componentId = 1, eventIndex = 0, tablePosition = 0 },
+	}
+	for _, record in records do
+		scratch.handlesPosition = 5
+		local b = buffer.create(ReplicationCodec.sizeIncremental(record))
+		ReplicationCodec.writeIncremental(b, 0, record)
+		ReplicationCodec.readIncremental(b, 0, scratch)
+		check("non-create record clears stale handle position", scratch.handlesPosition == nil)
+	end
+end
+
 print(`ReplicationCodec: {passed} passed, {failed} failed`)
 if failed > 0 then error(`ReplicationCodec tests failed ({failed} failures)`, 0) end

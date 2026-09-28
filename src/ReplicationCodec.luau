@@ -21,6 +21,9 @@
 --   <payload>     payloadLen bytes (the component's own serializeReplicatedState /
 --                 serializeParams output; opaque to this codec)
 --   tablePosition u16  -> 1-based index into the side-channel table array (0 = none)
+--   handlesPosition u16 -> CREATE/snapshot only; index into instanceHandlesResults (0 = none)
+--                          Native InstanceHandles travel through the RemoteEvent side channel.
+-- Protocol 0.4 changes CREATE/snapshot framing; both peers must run the same package version.
 --
 -- NOTE: componentId was historically a u8 in some paths and, in the event/signal
 -- paths, written with writeu32 while only one byte was reserved/read — correct only
@@ -56,6 +59,7 @@ export type IncrementalRecord = {
 	payload: buffer?, -- CREATE, EVENT, SIGNAL (nil when payloadLen == 0)
 	payloadLen: number?, -- byte length of payload (0 when none)
 	tablePosition: number?, -- CREATE, EVENT, SIGNAL (0 when none)
+	handlesPosition: number?, -- CREATE only (0 when none)
 }
 
 export type SnapshotRecord = {
@@ -64,6 +68,7 @@ export type SnapshotRecord = {
 	payload: buffer?,
 	payloadLen: number,
 	tablePosition: number,
+	handlesPosition: number?,
 }
 
 -- The trailing "<payloadLen><payload?><tablePosition>" shared by every record that
@@ -102,7 +107,7 @@ function ReplicationCodec.sizeIncremental(record: IncrementalRecord): number
 	if tag == DESTROY then
 		return TAG_SIZE + COMPONENT_ID_SIZE + INSTANCE_ID_SIZE
 	elseif tag == CREATE then
-		return TAG_SIZE + COMPONENT_ID_SIZE + INSTANCE_ID_SIZE + PAYLOAD_LEN_SIZE + payloadLen + TABLE_POSITION_SIZE
+		return TAG_SIZE + COMPONENT_ID_SIZE + INSTANCE_ID_SIZE + PAYLOAD_LEN_SIZE + payloadLen + TABLE_POSITION_SIZE * 2
 	elseif tag == EVENT then
 		return TAG_SIZE + COMPONENT_ID_SIZE + EVENT_INDEX_SIZE + INSTANCE_ID_SIZE + PAYLOAD_LEN_SIZE + payloadLen + TABLE_POSITION_SIZE
 	elseif tag == SIGNAL then
@@ -128,6 +133,8 @@ function ReplicationCodec.writeIncremental(b: buffer, offset: number, record: In
 		buffer.writeu32(b, offset, record.instanceId :: number)
 		offset += INSTANCE_ID_SIZE
 		offset = writePayloadTail(b, offset, record.payload, record.payloadLen or 0, record.tablePosition or 0)
+		buffer.writeu16(b, offset, record.handlesPosition or 0)
+		offset += TABLE_POSITION_SIZE
 	elseif tag == EVENT then
 		buffer.writeu16(b, offset, record.componentId)
 		offset += COMPONENT_ID_SIZE
@@ -163,6 +170,7 @@ function ReplicationCodec.readIncremental(b: buffer, offset: number, out: Increm
 	local tag = buffer.readu8(b, offset)
 	offset += TAG_SIZE
 	record.tag = tag
+	record.handlesPosition = nil
 	-- componentId immediately follows the tag for every record kind.
 	record.componentId = buffer.readu16(b, offset)
 	offset += COMPONENT_ID_SIZE
@@ -183,6 +191,8 @@ function ReplicationCodec.readIncremental(b: buffer, offset: number, out: Increm
 		record.payloadLen = payloadLen
 		record.tablePosition = tablePosition
 		offset = newOffset
+		record.handlesPosition = buffer.readu16(b, offset)
+		offset += TABLE_POSITION_SIZE
 	elseif tag == EVENT then
 		record.eventIndex = buffer.readu8(b, offset)
 		offset += EVENT_INDEX_SIZE
@@ -211,7 +221,7 @@ end
 
 -- Byte size this record will occupy in a snapshot stream.
 function ReplicationCodec.sizeSnapshot(record: SnapshotRecord): number
-	return COMPONENT_ID_SIZE + INSTANCE_ID_SIZE + PAYLOAD_LEN_SIZE + record.payloadLen + TABLE_POSITION_SIZE
+	return COMPONENT_ID_SIZE + INSTANCE_ID_SIZE + PAYLOAD_LEN_SIZE + record.payloadLen + TABLE_POSITION_SIZE * 2
 end
 
 -- Writes the snapshot record at `offset`; returns the offset just past it.
@@ -221,6 +231,8 @@ function ReplicationCodec.writeSnapshot(b: buffer, offset: number, record: Snaps
 	buffer.writeu32(b, offset, record.instanceId)
 	offset += INSTANCE_ID_SIZE
 	offset = writePayloadTail(b, offset, record.payload, record.payloadLen, record.tablePosition)
+	buffer.writeu16(b, offset, record.handlesPosition or 0)
+	offset += TABLE_POSITION_SIZE
 	return offset
 end
 
@@ -231,12 +243,15 @@ function ReplicationCodec.readSnapshot(b: buffer, offset: number): (SnapshotReco
 	local instanceId = buffer.readu32(b, offset)
 	offset += INSTANCE_ID_SIZE
 	local payload, payloadLen, tablePosition, newOffset = readPayloadTail(b, offset)
+	local handlesPosition = buffer.readu16(b, newOffset)
+	newOffset += TABLE_POSITION_SIZE
 	return {
 		componentId = componentId,
 		instanceId = instanceId,
 		payload = payload,
 		payloadLen = payloadLen,
 		tablePosition = tablePosition,
+		handlesPosition = handlesPosition,
 	},
 		newOffset
 end

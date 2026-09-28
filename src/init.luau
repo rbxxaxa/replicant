@@ -2,8 +2,8 @@
 -- rbxxaxa/replicant — a server-authoritative replicated object framework for Roblox.
 --
 -- "Replicants" are OOP objects whose state auto-replicates server -> client. Each has three state
--- buckets — `replicatedState` (replicated to all clients, the only bucket clients read),
--- `serverState` (server-only), and `clientState` (client-only) — plus a lifecycle (new/newClient/
+-- buckets — `replicatedState` (shared), `serverState` (server-only), `clientState` (client-only) —
+-- plus a shared `instanceHandles` mapping whose targets may be streamed out, a lifecycle (new/newClient/
 -- destroy), heartbeats, server-only events (the only place replicatedState may mutate), validated
 -- client->server messages, and server-only signals. State is buffer-packed over one reliable
 -- RemoteEvent per frame. Extracted from the studio-incubator-prototype / Ship Wars codebases.
@@ -38,11 +38,13 @@ local ReplicationCodec = require(script.ReplicationCodec)
 local defineReplicantModule = require(script.defineReplicant)
 
 export type ServerOnlySignal<EventParams> = defineReplicantModule.ServerOnlySignal<EventParams>
-export type Replicant<InitParams, ReplicatedState, ServerState, ClientState> = defineReplicantModule.Replicant<
+export type InstanceHandles = defineReplicantModule.InstanceHandles
+export type Replicant<InitParams, ReplicatedState, ServerState, ClientState, Handles = InstanceHandles> = defineReplicantModule.Replicant<
 	InitParams,
 	ReplicatedState,
 	ServerState,
-	ClientState
+	ClientState,
+	Handles
 >
 
 return {

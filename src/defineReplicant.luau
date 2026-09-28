@@ -1,6 +1,7 @@
 --!strict
 local RunService = game:GetService("RunService")
 
+local InstanceHandleLifecycle = require(script.Parent.InstanceHandleLifecycle)
 local ReplicantManager = require(script.Parent.ReplicantManager)
 local Signal = require(script.Parent.Parent.Signal)
 
@@ -16,23 +17,60 @@ local function deepCopy(value: any): any
 	return copy
 end
 
+local function prepareHandles(handles: any): InstanceHandles
+	local result: InstanceHandles = {}
+	if handles == nil then return table.freeze(result) end
+	assert(type(handles) == "table", "instanceHandles must be a string-to-InstanceHandle table")
+	for key, handle in handles do
+		assert(type(key) == "string" and typeof(handle) == "InstanceHandle", "instanceHandles must map string keys to InstanceHandles")
+		local instance = handle:Get()
+		if instance and instance:IsA("Model") and workspace.StreamingEnabled then
+			local mode = instance.ModelStreamingMode
+			assert(
+				mode == Enum.ModelStreamingMode.Atomic or mode == Enum.ModelStreamingMode.Persistent or mode == Enum.ModelStreamingMode.PersistentPerPlayer,
+				`Replicant handle '{key}' requires an Atomic or Persistent model; Nonatomic models are unsupported`
+			)
+		end
+		result[key] = handle
+	end
+	return table.freeze(result)
+end
+
+local function callStreamHook(instance: any, method: string, key: string, target: Instance)
+	local callback = instance[method]
+	if callback then
+		-- Hooks mutate presentation immediately. Yielding would let an old stream-in resume
+		-- after stream-out/cleanup and reconnect listeners to a stale instance.
+		local thread = coroutine.create(callback)
+		local ok, failure = coroutine.resume(thread, instance, key, target)
+		if not ok then warn(failure) end
+		if coroutine.status(thread) ~= "dead" then
+			task.cancel(thread)
+			warn(`Replicant {method} must not yield (handle '{key}')`)
+		end
+	end
+end
+
 export type ServerOnlySignal<EventParams> = {
 	FireAllClients: (params: EventParams) -> (),
 	Event: Signal.Signal<EventParams>,
 }
 
 -- This file is a typing abomination sorry...
-export type Replicant<InitParams, ReplicatedState, ServerState, ClientState> = {
+export type InstanceHandles = { [string]: InstanceHandle }
+
+export type Replicant<InitParams, ReplicatedState, ServerState, ClientState, Handles = InstanceHandles> = {
 	getById: (id: number?) -> any,
 	createServerOnlyEvent: <EventParams>(options: any) -> (any, number),
 	createSendMessageToServerEvent: <EventParams>(options: any) -> (any, number),
 
 	setNew: (
-		(params: InitParams) -> (ReplicatedState, ServerState),
+		(params: InitParams) -> (ReplicatedState, ServerState, Handles?),
 		((
 			serverBare: {
 				id: number,
 				replicatedState: ReplicatedState,
+				instanceHandles: Handles,
 				serverState: ServerState,
 				isServer: boolean,
 				isClient: boolean,
@@ -42,6 +80,7 @@ export type Replicant<InitParams, ReplicatedState, ServerState, ClientState> = {
 			serverBare: {
 				id: number,
 				replicatedState: ReplicatedState,
+				instanceHandles: Handles,
 				serverState: ServerState,
 				isServer: boolean,
 				isClient: boolean,
@@ -52,18 +91,19 @@ export type Replicant<InitParams, ReplicatedState, ServerState, ClientState> = {
 	) -> (params: InitParams) -> any,
 
 	setNewClient: (
-		(replicatedState: ReplicatedState) -> ClientState,
+		(replicatedState: ReplicatedState, instanceHandles: Handles) -> ClientState,
 		(
 			clientBare: {
 				id: number,
 				replicatedState: ReplicatedState,
+				instanceHandles: Handles,
 				clientState: ClientState,
 				isClient: boolean,
 				isServer: boolean,
 				uniqueId: number,
 			}
 		) -> any
-	) -> (id: number, replicatedState: ReplicatedState) -> any,
+	) -> (id: number, replicatedState: ReplicatedState, componentId: number?, instanceHandles: Handles?) -> any,
 
 	setClientLateInit: ((clientComponent: any) -> ()) -> (clientComponent: any) -> (),
 
@@ -95,12 +135,13 @@ local function errorInstanceNotFound(moduleName: string, id: number)
 	end
 end
 
-local function defineReplicant<InitParams, ReplicatedState, ServerState, ClientState>(options: {
+local function defineReplicant<InitParams, ReplicatedState, ServerState, ClientState, Handles>(options: {
 	module: ModuleScript,
 	paramsType: InitParams,
 	replicatedStateType: ReplicatedState,
 	serverStateType: ServerState,
 	clientStateType: ClientState,
+	instanceHandlesType: Handles?,
 	serializeReplicatedState: ((any) -> (buffer?, any))?,
 	deserializeReplicatedState: ((buffer?, any) -> any)?,
 })
@@ -110,6 +151,7 @@ local function defineReplicant<InitParams, ReplicatedState, ServerState, ClientS
 		{} :: {
 			id: number,
 			replicatedState: ReplicatedState,
+			instanceHandles: Handles,
 			serverState: ServerState,
 			isServer: boolean,
 			isClient: boolean,
@@ -122,6 +164,7 @@ local function defineReplicant<InitParams, ReplicatedState, ServerState, ClientS
 		{} :: {
 			id: number,
 			replicatedState: ReplicatedState,
+			instanceHandles: Handles,
 			clientState: ClientState,
 			isServer: boolean,
 			isClient: boolean,
@@ -141,14 +184,16 @@ local function defineReplicant<InitParams, ReplicatedState, ServerState, ClientS
 		created = Signal.new(),
 		destroyed = Signal.new(),
 	}
+	local clientHandleCleanup: { [number]: () -> () } = {}
 
 	local createdThisFrame: { [number]: true } = {}
 	mt.setNew = function(
-		constructCallback: (params: InitParams) -> (ReplicatedState, ServerState),
+		constructCallback: (params: InitParams) -> (ReplicatedState, ServerState, Handles?),
 		finalizeCallback: ((
 			serverBare: {
 				id: number,
 				replicatedState: ReplicatedState,
+				instanceHandles: Handles,
 				serverState: ServerState,
 				isServer: boolean,
 				isClient: boolean,
@@ -158,6 +203,7 @@ local function defineReplicant<InitParams, ReplicatedState, ServerState, ClientS
 			serverBare: {
 				id: number,
 				replicatedState: ReplicatedState,
+				instanceHandles: Handles,
 				serverState: ServerState,
 				isServer: boolean,
 				isClient: boolean,
@@ -175,15 +221,25 @@ local function defineReplicant<InitParams, ReplicatedState, ServerState, ClientS
 			local id = nextId
 			nextId += 1
 
-			local replicatedState, serverState = constructCallback(params)
+			local constructOk, replicatedState, serverState, handles = pcall(constructCallback, params)
+			if not constructOk then
+				ReplicantManager.unraiseCreating()
+				error(replicatedState, 2)
+			end
+			local handlesOk, instanceHandles = pcall(prepareHandles, handles)
+			if not handlesOk then
+				ReplicantManager.unraiseCreating()
+				error(instanceHandles, 2)
+			end
 			local uniqueId = (componentId :: number) * 2 ^ 32 + id
 
-			ReplicantManager.queueCreate(componentId :: number, id, deepCopy(replicatedState))
+			ReplicantManager.queueCreate(componentId :: number, id, deepCopy(replicatedState), instanceHandles)
 
 			local value = {
 				id = id,
 				uniqueId = uniqueId,
 				replicatedState = replicatedState,
+				instanceHandles = instanceHandles,
 				serverState = serverState,
 				isClient = false,
 				isServer = true,
@@ -225,11 +281,12 @@ local function defineReplicant<InitParams, ReplicatedState, ServerState, ClientS
 	end
 
 	mt.setNewClient = function(
-		constructCallback: (replicatedState: ReplicatedState) -> ClientState,
+		constructCallback: (replicatedState: ReplicatedState, instanceHandles: Handles) -> ClientState,
 		finalizeCallback: (
 			clientBare: {
 				id: number,
 				replicatedState: ReplicatedState,
+				instanceHandles: Handles,
 				clientState: ClientState,
 				isServer: boolean,
 				isClient: boolean,
@@ -237,21 +294,35 @@ local function defineReplicant<InitParams, ReplicatedState, ServerState, ClientS
 			}
 		) -> any
 	)
-		return function(id: number, replicatedState: ReplicatedState, replicatedComponentId: number?)
+		return function(id: number, replicatedState: ReplicatedState, replicatedComponentId: number?, handles: Handles?)
 			assert(RunService:IsClient(), "This function can only be called on the client")
 
-			local clientState = constructCallback(replicatedState)
+			local instanceHandles = prepareHandles(handles)
+			local clientState = constructCallback(replicatedState, instanceHandles :: any)
 			local value = {
 				id = id,
 				uniqueId = if replicatedComponentId then replicatedComponentId * 2 ^ 32 + id else 0,
 				replicatedState = replicatedState,
+				instanceHandles = instanceHandles,
 				clientState = clientState,
 				isServer = false,
 				isClient = true,
 			}
 			mt.clientInstances[id] = value :: any
 
-			local final = finalizeCallback(value)
+			local ok, final = pcall(finalizeCallback :: any, value)
+			if not ok then
+				mt.clientInstances[id] = nil
+				error(final, 2)
+			end
+
+			clientHandleCleanup[id] = InstanceHandleLifecycle.observe(instanceHandles, function(key, target)
+				callStreamHook(final, "handleStreamedIn", key, target)
+			end, function(key, target)
+				callStreamHook(final, "handleStreamedOut", key, target)
+			end, function(target)
+				return target:IsDescendantOf(game)
+			end, task :: any)
 
 			mt.created:Fire(final)
 
@@ -273,11 +344,11 @@ local function defineReplicant<InitParams, ReplicatedState, ServerState, ClientS
 		assert(options.serializeReplicatedState, "deserializeReplicatedState and serializeReplicatedState must be provided together")
 	end
 
-	mt.serializeReplicatedState = function(replicatedState: ReplicatedState): (buffer?, any)
-		if not options.serializeReplicatedState then return nil, replicatedState end
+	mt.serializeReplicatedState = function(replicatedState: ReplicatedState, instanceHandles: Handles?): (buffer?, any, Handles?)
+		if not options.serializeReplicatedState then return nil, replicatedState, instanceHandles end
 
 		local b, serializedTable = options.serializeReplicatedState(replicatedState)
-		return b, serializedTable
+		return b, serializedTable, instanceHandles
 	end
 
 	mt.deserializeReplicatedState = function(b: buffer?, serializedTable: any): ReplicatedState
@@ -290,7 +361,7 @@ local function defineReplicant<InitParams, ReplicatedState, ServerState, ClientS
 		local instance = mt.serverInstances[id]
 		if not instance then errorInstanceNotFound(moduleName, id) end
 
-		return instance.replicatedState
+		return instance.replicatedState, instance.instanceHandles
 	end
 
 	local nextEventIndex = 0
@@ -573,15 +644,14 @@ local function defineReplicant<InitParams, ReplicatedState, ServerState, ClientS
 	mt.setCleanUpClientCallback = function(callback: (t: any) -> nil)
 		return function(id: number)
 			assert(RunService:IsClient(), "This function can only be called on the client")
-			xpcall(function()
-				local instance = mt.clientInstances[id]
-				if not instance then errorInstanceNotFound(moduleName, id) end
-
-				callback(mt.clientInstances[id])
-				mt.clientInstances[id] = nil
-
-				mt.destroyed:Fire(instance)
-			end, warn :: any)
+			local instance = mt.clientInstances[id]
+			if not instance then return end
+			mt.clientInstances[id] = nil
+			local cleanup = clientHandleCleanup[id]
+			clientHandleCleanup[id] = nil
+			if cleanup then cleanup() end
+			xpcall(callback, warn :: any, instance)
+			mt.destroyed:Fire(instance)
 		end
 	end
 
@@ -641,7 +711,7 @@ local function defineReplicant<InitParams, ReplicatedState, ServerState, ClientS
 		end
 	end
 
-	return (mt :: any) :: Replicant<InitParams, ReplicatedState, ServerState, ClientState>, ({} :: any) :: ServerType, ({} :: any) :: ClientType
+	return (mt :: any) :: Replicant<InitParams, ReplicatedState, ServerState, ClientState, Handles>, ({} :: any) :: ServerType, ({} :: any) :: ClientType
 end
 
 return {
