@@ -1,6 +1,7 @@
 --!strict
 local RunService = game:GetService("RunService")
 
+local HeartbeatDispatch = require(script.Parent.HeartbeatDispatch)
 local InstanceHandleLifecycle = require(script.Parent.InstanceHandleLifecycle)
 local ReplicantManager = require(script.Parent.ReplicantManager)
 local Signal = require(script.Parent.Parent.Signal)
@@ -664,15 +665,11 @@ local function defineReplicant<InitParams, ReplicatedState, ServerState, ClientS
 			heartbeatAccumulator += dt
 
 			if intervalNumber == 0 then
-				for id, instance in mt.serverInstances do
-					if not createdThisFrame[id] then callback(instance, dt) end
-				end
+				HeartbeatDispatch.stepAll(mt.serverInstances, createdThisFrame, callback, dt, HeartbeatDispatch.report)
 				createdThisFrame = {}
 			else
 				while heartbeatAccumulator >= intervalNumber do
-					for id, instance in mt.serverInstances do
-						if not createdThisFrame[id] then callback(instance, intervalNumber) end
-					end
+					HeartbeatDispatch.stepAll(mt.serverInstances, createdThisFrame, callback, intervalNumber, HeartbeatDispatch.report)
 					heartbeatAccumulator -= intervalNumber
 				end
 				createdThisFrame = {}
@@ -683,9 +680,7 @@ local function defineReplicant<InitParams, ReplicatedState, ServerState, ClientS
 	mt.setHeartbeatClient = function(callback: (t: any, dt: number) -> nil)
 		return function(dt: number)
 			assert(RunService:IsClient(), "This function can only be called on the client")
-			for _, instance in mt.clientInstances do
-				callback(instance, dt)
-			end
+			HeartbeatDispatch.stepAll(mt.clientInstances, nil, callback, dt, HeartbeatDispatch.report)
 		end
 	end
 

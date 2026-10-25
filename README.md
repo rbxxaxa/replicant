@@ -7,7 +7,7 @@ game).
 
 ```toml
 [dependencies]
-Replicant = "rbxxaxa/replicant@0.4.0"
+Replicant = "rbxxaxa/replicant@0.4.1"
 ```
 
 ## The model
@@ -38,6 +38,10 @@ Replicant.ReplicantManager.startClient() -- on the client
 Define a replicant type with `Replicant.defineReplicant{...}`, then `setNew` / `setNewClient`,
 `createServerOnlyEvent` (mutates `replicatedState`), `createSendMessageToServerEvent` (client → server),
 `createServerOnlySignal`, and `setHeartbeatServer/Client`. See the module source for the full contract.
+
+Each instance's heartbeat step runs in its own protected call. A step that throws reports its error
+and skips only that instance for the frame; every other instance, replicant type and the frame's
+replication flush still run.
 
 ## Streaming and instance handles
 
@@ -150,6 +154,7 @@ wally install
 lune run tests/replication-codec.test   # pure wire-codec round-trip tests
 lune run tests/redblacktree.test        # red-black tree invariant + differential stress tests
 lune run tests/instance-handle-lifecycle.test # deterministic repeated-streaming/cancellation tests
+lune run tests/heartbeat-dispatch.test  # a throwing heartbeat skips only its own step
 ```
 
 `ReplicationCodec` and the injected `InstanceHandleLifecycle` state machine run under Lune.

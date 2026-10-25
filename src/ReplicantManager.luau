@@ -2,6 +2,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
+local HeartbeatDispatch = require(script.Parent.HeartbeatDispatch)
 local RedBlackTree = require(script.Parent.RedBlackTree)
 local ReplicationCodec = require(script.Parent.ReplicationCodec)
 local Signal = require(script.Parent.Parent.Signal)
@@ -677,7 +678,7 @@ function module.startServer()
 			if not staticInitCalled[componentId :: number] then
 				staticInitCalled[componentId :: number] = true
 				local component = getComponent(componentId :: number)
-				if component.staticInitServer then component.staticInitServer() end
+				if component.staticInitServer then xpcall(component.staticInitServer, HeartbeatDispatch.report) end
 			end
 		end
 
@@ -685,7 +686,9 @@ function module.startServer()
 			local component = getComponent(componentId :: number)
 			if component.heartbeatServer then
 				debug.profilebegin(`{componentModule.Name}::heartbeatServer`)
-				component.heartbeatServer(dt)
+				-- Protected here too, so a type's own heartbeat code outside its instances' steps
+				-- cannot skip the flush below.
+				xpcall(component.heartbeatServer, HeartbeatDispatch.report, dt)
 				debug.profileend()
 			end
 		end
@@ -901,7 +904,7 @@ function module.startClient()
 			if not staticInitClientCalled[componentId :: number] then
 				staticInitClientCalled[componentId :: number] = true
 				local component = getComponent(componentId :: number)
-				if component.staticInitClient then component.staticInitClient() end
+				if component.staticInitClient then xpcall(component.staticInitClient, HeartbeatDispatch.report) end
 			end
 		end
 
@@ -909,7 +912,7 @@ function module.startClient()
 			local component = getComponent(componentId :: number)
 			if component.heartbeatClient then
 				debug.profilebegin(`{componentModule.Name}::heartbeatClient`)
-				component.heartbeatClient(dt)
+				xpcall(component.heartbeatClient, HeartbeatDispatch.report, dt)
 				debug.profileend()
 			end
 		end
